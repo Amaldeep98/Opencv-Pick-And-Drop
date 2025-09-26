@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hand-as-Mouse (Web) — MediaPipe</title>
+<style>
+  html,body { height:100%; margin:0; background:#111; color:#eee; font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial; }
+  #container { position:relative; height:100vh; overflow:hidden; }
+  video#input_video { display: none; }
+  #canvasOutput { position:absolute; inset:0; pointer-events:none; } /* drawing overlay */
+  /* virtual cursor */
+  .vcursor {
+    position: absolute;
+    width:18px;
+    height:18px;
+    border-radius:50%;
+    background: #00ffb3;
+    box-shadow: 0 0 10px rgba(0,255,179,0.9);
+    transform: translate(-50%,-50%);
+    pointer-events: none; /* let events be dispatched manually */
+    z-index: 9999;
+  }
+  .vcursor.click {
+    background:#ff5a5a;
+    box-shadow: 0 0 14px rgba(255,90,90,0.95);
+    width:24px; height:24px;
+  }
+  #controls {
+    position:absolute; left:8px; top:8px; z-index:10000;
+    background: rgba(0,0,0,0.4); padding:10px; border-radius:8px;
+    backdrop-filter: blur(4px);
+  }
+  
+  .camera-selector {
+    margin-top: 10px;
+  }
+  
+  .camera-selector select {
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    border-radius: 4px;
+    color: white;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  
+  .camera-selector select option {
+    background: #333;
+    color: white;
+  }
+  
+  .camera-selector button {
+    background: linear-gradient(135deg, #4ecdc4, #44a08d);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    padding: 4px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    margin-left: 5px;
+  }
+  
+  .camera-selector button:hover {
+    background: linear-gradient(135deg, #5dd5cc, #54b09d);
+  }
+  #status { font-size:13px; }
+  .hint { margin-top:6px; font-size:12px; opacity:0.85; }
+  /* sample interactive page content (for testing clicks) */
+  .grid {
+    display:grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap:14px;
+    width: min(1024px, 90%);
+    margin: 80px auto;
+    z-index:1;
+    position:relative;
+  }
+  .card {
+    background:linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+    border:1px solid rgba(255,255,255,0.04);
+    padding:20px;
+    height:120px;
+    border-radius:10px;
+    display:flex; align-items:center; justify-content:center;
+    font-size:18px;
+    color:#fff;
+    cursor:pointer;
+  }
+  .card:active { transform: translateY(2px); }
+  
+  /* Draggable objects */
+  .draggable-object {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+    border-radius: 8px;
+    cursor: grab;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    color: white;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.7);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    transition: transform 0.1s ease;
+    user-select: none;
+    z-index: 1000;
+  }
+  
+  .draggable-object:active {
+    cursor: grabbing;
+    transform: scale(1.05);
+  }
+  
+  .draggable-object.dragging {
+    z-index: 10000;
+    transform: scale(1.1);
+    box-shadow: 0 8px 16px rgba(0,0,0,0.5);
+  }
+  
+  .object-red { background: linear-gradient(135deg, #ff6b6b, #ee5a52); }
+  .object-blue { background: linear-gradient(135deg, #4ecdc4, #44a08d); }
+  .object-green { background: linear-gradient(135deg, #45b7d1, #96c93d); }
+  .object-purple { background: linear-gradient(135deg, #a8edea, #fed6e3); color: #333; }
+  .object-orange { background: linear-gradient(135deg, #ffecd2, #fcb69f); color: #333; }
+  .object-pink { background: linear-gradient(135deg, #ff9a9e, #fecfef); color: #333; }
+  
+  .object-circle { border-radius: 50%; }
+  .object-triangle { 
+    width: 0; 
+    height: 0; 
+    background: none !important;
+    border-left: 40px solid transparent;
+    border-right: 40px solid transparent;
+    border-bottom: 70px solid #ff6b6b;
+  }
+  .object-triangle.blue { border-bottom-color: #4ecdc4; }
+  .object-triangle.green { border-bottom-color: #45b7d1; }
+  .object-triangle.purple { border-bottom-color: #a8edea; }
+  .object-triangle.orange { border-bottom-color: #ffecd2; }
+  .object-triangle.pink { border-bottom-color: #ff9a9e; }
+  
+  /* Basket styles */
+  .basket {
+    position: absolute;
+    width: 200px;
+    height: 150px;
+    background: linear-gradient(135deg, #8B4513, #A0522D);
+    border: 4px solid #654321;
+    border-radius: 20px;
+    bottom: 50px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: bold;
+    color: white;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.7);
+    box-shadow: 0 8px 16px rgba(0,0,0,0.3);
+    z-index: 500;
+    transition: all 0.3s ease;
+  }
+  
+  .basket::before {
+    content: '';
+    position: absolute;
+    top: -10px;
+    left: 20px;
+    right: 20px;
+    height: 20px;
+    background: linear-gradient(135deg, #8B4513, #A0522D);
+    border: 4px solid #654321;
+    border-bottom: none;
+    border-radius: 20px 20px 0 0;
+  }
+  
+  .basket.highlight {
+    background: linear-gradient(135deg, #CD853F, #DEB887);
+    border-color: #8B4513;
+    transform: translateX(-50%) scale(1.05);
+    box-shadow: 0 12px 24px rgba(0,0,0,0.4);
+  }
+  
+  .basket.highlight::before {
+    background: linear-gradient(135deg, #CD853F, #DEB887);
+    border-color: #8B4513;
+  }
+  
+  .basket-content {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-width: 180px;
+    max-height: 120px;
+    overflow: hidden;
+  }
+  
+  .basket-item {
+    width: 20px;
+    height: 20px;
+    border-radius: 3px;
+    opacity: 0.8;
+  }
+</style>
+</head>
+<body>
+<div id="container">
+  <div id="controls">
+    <div id="status">Initializing...</div>
+    <div class="hint">Pinch thumb + index to click. Move index tip to move cursor.</div>
+    <div class="hint">Use on localhost or HTTPS. Camera permission required.</div>
+    
+    <div class="camera-selector">
+      <select id="cameraSelect">
+        <option value="0">Camera 0 (Default)</option>
+      </select>
+      <button id="switchCamera">Switch Camera</button>
+    </div>
+  </div>
+
+  <!-- interactive test area -->
+  <div class="grid" id="testGrid">
+    <div class="card">Button 1</div>
+    <div class="card">Button 2</div>
+    <div class="card">Button 3</div>
+    <div class="card">Button 4</div>
+    <div class="card">Button 5</div>
+    <div class="card">Button 6</div>
+  </div>
+
+  <!-- Draggable objects -->
+  <div class="draggable-object object-red" style="left: 100px; top: 150px;">Square</div>
+  <div class="draggable-object object-blue object-circle" style="left: 200px; top: 150px;">Circle</div>
+  <div class="draggable-object object-green" style="left: 300px; top: 150px;">Box</div>
+  <div class="draggable-object object-purple object-triangle" style="left: 400px; top: 150px;"></div>
+  <div class="draggable-object object-orange object-circle" style="left: 500px; top: 150px;">Ball</div>
+  <div class="draggable-object object-pink" style="left: 600px; top: 150px;">Heart</div>
+
+  <!-- Basket for dropping shapes -->
+  <div class="basket" id="basket">
+    <div class="basket-content" id="basketContent">
+      <span>Drop shapes here!</span>
+    </div>
+  </div>
+
+  <canvas id="canvasOutput"></canvas>
+  <video id="input_video" autoplay playsinline muted></video>
+  <div id="vcursor" class="vcursor" style="left:50%;top:50%"></div>
+</div>
+
+<!-- MediaPipe libs from CDN -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script>
+(async () => {
+  const statusEl = document.getElementById('status');
+  const videoElement = document.getElementById('input_video');
+  const canvasElement = document.getElementById('canvasOutput');
+  const canvasCtx = canvasElement.getContext('2d');
+  const vcursor = document.getElementById('vcursor');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const switchCameraBtn = document.getElementById('switchCamera');
+  
+  // Camera management
+  let currentCameraIndex = 0;
+  let availableCameras = [];
+  let currentStream = null;
+
+  // size the canvas
+  function resizeCanvas() {
+    canvasElement.width = window.innerWidth;
+    canvasElement.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  // smoothing (exponential moving average)
+  let smoothX = window.innerWidth/2;
+  let smoothY = window.innerHeight/2;
+  const SMOOTHING = 0.2; // 0 = no smoothing, 1 = frozen
+
+  // click state
+  let isPinching = false;
+  let pinchCooldown = false;
+  let pinchReleaseTimer = null;
+  
+  // drag state
+  let isDragging = false;
+  let draggedElement = null;
+  let dragOffset = { x: 0, y: 0 };
+
+  // min pinch distance (normalized). tune if needed.
+  const PINCH_THRESHOLD = 0.035;
+
+  // set up MediaPipe Hands
+  const hands = new Hands({
+    locateFile: (file) => {
+      return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }
+  });
+
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.6
+  });
+
+  hands.onResults(onResults);
+
+  // Camera detection and management
+  async function detectAvailableCameras() {
+    availableCameras = [];
+    const cameraSelect = document.getElementById('cameraSelect');
+    
+    // Clear existing options
+    cameraSelect.innerHTML = '';
+    
+    try {
+      // Get all available devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      
+      if (videoDevices.length === 0) {
+        cameraSelect.innerHTML = '<option value="0">No cameras found</option>';
+        return;
+      }
+      
+      // Add camera options
+      videoDevices.forEach((device, index) => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.textContent = device.label || `Camera ${index}`;
+        cameraSelect.appendChild(option);
+        availableCameras.push(device.deviceId);
+      });
+      
+      console.log('Available cameras:', availableCameras);
+      statusEl.textContent = `Found ${availableCameras.length} camera(s)`;
+      
+    } catch (error) {
+      console.error('Error detecting cameras:', error);
+      cameraSelect.innerHTML = '<option value="0">Camera detection failed</option>';
+    }
+  }
+
+  // Start camera with specific device ID
+  async function startCamera(deviceId) {
+    try {
+      // Stop current stream if exists
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+      
+      // Get camera stream
+      currentStream = await navigator.mediaDevices.getUserMedia({
+        video: { 
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          width: 1280,
+          height: 720
+        }
+      });
+      
+      videoElement.srcObject = currentStream;
+      currentCameraIndex = deviceId;
+      
+      // Update camera selection
+      cameraSelect.value = deviceId;
+      
+      const cameraName = cameraSelect.options[cameraSelect.selectedIndex].textContent;
+      statusEl.textContent = `${cameraName} started — show your hand to control the cursor`;
+      
+    } catch (error) {
+      console.error('Error starting camera:', error);
+      statusEl.textContent = `Camera failed: ${error.message}`;
+    }
+  }
+
+  // Switch camera function
+  async function switchCamera() {
+    const selectedDeviceId = cameraSelect.value;
+    if (selectedDeviceId !== currentCameraIndex) {
+      await startCamera(selectedDeviceId);
+    }
+  }
+
+  // Event listeners
+  switchCameraBtn.addEventListener('click', switchCamera);
+  cameraSelect.addEventListener('change', switchCamera);
+
+  // Initialize cameras
+  await detectAvailableCameras();
+  
+  // Start with first available camera
+  if (availableCameras.length > 0) {
+    await startCamera(availableCameras[0]);
+  } else {
+    statusEl.textContent = 'No cameras available';
+    return;
+  }
+
+  // camera helper (from mediapipe)
+  const camera = new Camera(videoElement, {
+    onFrame: async () => {
+      await hands.send({image: videoElement});
+    },
+    width: 1280,
+    height: 720
+  });
+
+  try {
+    await camera.start();
+  } catch (e) {
+    statusEl.textContent = 'MediaPipe camera failed: ' + e.message;
+    console.error(e);
+    return;
+  }
+
+  function onResults(results) {
+    // clear overlay
+    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+    // No longer drawing video background
+
+    if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+      statusEl.textContent = 'No hand detected';
+      return;
+    }
+
+    statusEl.textContent = 'Hand detected';
+
+    const landmarks = results.multiHandLandmarks[0]; // array of 21 landmarks
+    // Index finger tip is landmark 8, thumb tip is 4
+    const indexTip = landmarks[8];
+    const thumbTip = landmarks[4];
+
+    // MediaPipe gives normalized coordinates with x=0 left, x=1 right. Because we drew mirrored,
+    // map mirrored normalization to screen coordinates:
+    // When using mirrored video, flipping X: screenX = windowWidth * (1 - indexTip.x)
+    const screenX = window.innerWidth * (1 - indexTip.x);
+    const screenY = window.innerHeight * indexTip.y;
+
+    // smoothing
+    smoothX = smoothX + (screenX - smoothX) * SMOOTHING;
+    smoothY = smoothY + (screenY - smoothY) * SMOOTHING;
+
+    // move virtual cursor
+    vcursor.style.left = smoothX + 'px';
+    vcursor.style.top = smoothY + 'px';
+
+    // draw simple landmarks and line between thumb and index for debug
+    drawSmallCircle(screenX, screenY, 6, '#00ffb3'); // virtual cursor pos
+    const thumbScreenX = window.innerWidth * (1 - thumbTip.x);
+    const thumbScreenY = window.innerHeight * thumbTip.y;
+    drawSmallCircle(thumbScreenX, thumbScreenY, 6, '#ffd166');
+    drawLine(screenX, screenY, thumbScreenX, thumbScreenY, '#fff');
+
+    // check pinch distance in normalized coordinates (distance between index tip and thumb tip)
+    const dx = indexTip.x - thumbTip.x;
+    const dy = indexTip.y - thumbTip.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+
+    // detect pinch state
+    if (dist < PINCH_THRESHOLD && !pinchCooldown) {
+      if (!isPinching) {
+        isPinching = true;
+        vcursor.classList.add('click');
+        
+        // Clear any pending release timer
+        if (pinchReleaseTimer) {
+          clearTimeout(pinchReleaseTimer);
+          pinchReleaseTimer = null;
+        }
+        
+        // Check if we're over a draggable object
+        const elementUnderCursor = document.elementFromPoint(smoothX, smoothY);
+        if (elementUnderCursor && elementUnderCursor.classList.contains('draggable-object')) {
+          startDrag(elementUnderCursor, smoothX, smoothY);
+        } else {
+          dispatchClickAt(smoothX, smoothY);
+        }
+      } else if (isDragging) {
+        // Continue dragging
+        updateDrag(smoothX, smoothY);
+        // Check basket proximity for visual feedback
+        checkBasketProximity(smoothX, smoothY);
+      }
+    } else {
+      if (isPinching) {
+        // Add delay before releasing pinch to prevent errors
+        if (!pinchReleaseTimer) {
+          pinchReleaseTimer = setTimeout(() => {
+            isPinching = false;
+            vcursor.classList.remove('click');
+            if (isDragging) {
+              endDrag();
+            }
+            // start a tiny cooldown to avoid repeated clicks while holding
+            pinchCooldown = true;
+            setTimeout(() => { pinchCooldown = false; }, 350);
+            pinchReleaseTimer = null;
+          }, 150); // 150ms delay
+        }
+      }
+    }
+  }
+
+  function drawSmallCircle(x, y, r=4, color='#0f0') {
+    canvasCtx.beginPath();
+    canvasCtx.fillStyle = color;
+    canvasCtx.arc(x, y, r, 0, 2*Math.PI);
+    canvasCtx.fill();
+  }
+  function drawLine(x1, y1, x2, y2, color='#fff') {
+    canvasCtx.beginPath();
+    canvasCtx.strokeStyle = color;
+    canvasCtx.lineWidth = 2;
+    canvasCtx.moveTo(x1,y1);
+    canvasCtx.lineTo(x2,y2);
+    canvasCtx.stroke();
+  }
+
+  // Dispatch pointer events to whatever element is under the virtual cursor
+  // We simulate pointerdown -> pointerup -> click
+  function dispatchClickAt(x, y) {
+    // find top element at that point
+    const el = document.elementFromPoint(x, y);
+    if (!el) return;
+    // create and dispatch PointerEvent / MouseEvent sequence
+    const rect = el.getBoundingClientRect();
+    const offsetX = x - rect.left;
+    const offsetY = y - rect.top;
+
+    const eventInit = {
+      bubbles: true,
+      cancelable: true,
+      clientX: x,
+      clientY: y,
+      screenX: x,
+      screenY: y,
+      offsetX,
+      offsetY,
+      pointerId: 1,
+      pointerType: 'touch' // or 'pen' or 'mouse'; choose 'mouse' to mimic mouse closely
+    };
+
+    // pointerdown
+    const pd = new PointerEvent('pointerdown', eventInit);
+    el.dispatchEvent(pd);
+    // mouse down
+    const md = new MouseEvent('mousedown', eventInit);
+    el.dispatchEvent(md);
+
+    // short press (you may change timing)
+    setTimeout(() => {
+      const pu = new PointerEvent('pointerup', eventInit);
+      el.dispatchEvent(pu);
+      const mu = new MouseEvent('mouseup', eventInit);
+      el.dispatchEvent(mu);
+      const clickEv = new MouseEvent('click', eventInit);
+      el.dispatchEvent(clickEv);
+    }, 50);
+  }
+
+  // Drag and drop functions
+  function startDrag(element, x, y) {
+    isDragging = true;
+    draggedElement = element;
+    draggedElement.classList.add('dragging');
+    
+    const rect = element.getBoundingClientRect();
+    dragOffset.x = x - rect.left - rect.width / 2;
+    dragOffset.y = y - rect.top - rect.height / 2;
+    
+    console.log('Started dragging:', element.textContent || 'object');
+  }
+  
+  function updateDrag(x, y) {
+    if (!isDragging || !draggedElement) return;
+    
+    const newX = x - dragOffset.x;
+    const newY = y - dragOffset.y;
+    
+    // Keep object within bounds
+    const maxX = window.innerWidth - draggedElement.offsetWidth;
+    const maxY = window.innerHeight - draggedElement.offsetHeight;
+    
+    draggedElement.style.left = Math.max(0, Math.min(newX, maxX)) + 'px';
+    draggedElement.style.top = Math.max(0, Math.min(newY, maxY)) + 'px';
+  }
+  
+  function endDrag() {
+    if (isDragging && draggedElement) {
+      draggedElement.classList.remove('dragging');
+      
+      // Check if dropped in basket
+      const basket = document.getElementById('basket');
+      const basketRect = basket.getBoundingClientRect();
+      const objectRect = draggedElement.getBoundingClientRect();
+      
+      // Check if object overlaps with basket
+      if (objectRect.left < basketRect.right && 
+          objectRect.right > basketRect.left && 
+          objectRect.top < basketRect.bottom && 
+          objectRect.bottom > basketRect.top) {
+        
+        // Add to basket
+        addToBasket(draggedElement);
+        console.log('Object dropped in basket:', draggedElement.textContent || 'object');
+      } else {
+        console.log('Ended dragging:', draggedElement.textContent || 'object');
+      }
+    }
+    isDragging = false;
+    draggedElement = null;
+  }
+  
+  function addToBasket(element) {
+    const basketContent = document.getElementById('basketContent');
+    const basket = document.getElementById('basket');
+    
+    // Remove the "Drop shapes here!" text if it exists
+    const dropText = basketContent.querySelector('span');
+    if (dropText) {
+      dropText.remove();
+    }
+    
+    // Create a small representation of the object in the basket
+    const basketItem = document.createElement('div');
+    basketItem.className = 'basket-item';
+    
+    // Copy the color/style from the original object
+    if (element.classList.contains('object-red')) {
+      basketItem.style.background = 'linear-gradient(135deg, #ff6b6b, #ee5a52)';
+    } else if (element.classList.contains('object-blue')) {
+      basketItem.style.background = 'linear-gradient(135deg, #4ecdc4, #44a08d)';
+    } else if (element.classList.contains('object-green')) {
+      basketItem.style.background = 'linear-gradient(135deg, #45b7d1, #96c93d)';
+    } else if (element.classList.contains('object-purple')) {
+      basketItem.style.background = 'linear-gradient(135deg, #a8edea, #fed6e3)';
+    } else if (element.classList.contains('object-orange')) {
+      basketItem.style.background = 'linear-gradient(135deg, #ffecd2, #fcb69f)';
+    } else if (element.classList.contains('object-pink')) {
+      basketItem.style.background = 'linear-gradient(135deg, #ff9a9e, #fecfef)';
+    }
+    
+    // Make it circular if the original was circular
+    if (element.classList.contains('object-circle')) {
+      basketItem.style.borderRadius = '50%';
+    }
+    
+    basketContent.appendChild(basketItem);
+    
+    // Hide the original object
+    element.style.display = 'none';
+    
+    // Add highlight effect to basket
+    basket.classList.add('highlight');
+    setTimeout(() => {
+      basket.classList.remove('highlight');
+    }, 500);
+  }
+  
+  function checkBasketProximity(x, y) {
+    const basket = document.getElementById('basket');
+    const basketRect = basket.getBoundingClientRect();
+    
+    // Check if cursor is near basket
+    const distance = Math.sqrt(
+      Math.pow(x - (basketRect.left + basketRect.width/2), 2) + 
+      Math.pow(y - (basketRect.top + basketRect.height/2), 2)
+    );
+    
+    if (distance < 150) { // Within 150px of basket center
+      basket.classList.add('highlight');
+    } else {
+      basket.classList.remove('highlight');
+    }
+  }
+
+  // Make test cards respond visually to clicks so user can test
+  document.querySelectorAll('.card').forEach(c => {
+    c.addEventListener('click', (e) => {
+      const t = e.currentTarget;
+      t.style.transition = 'transform 120ms';
+      t.style.transform = 'scale(0.98)';
+      setTimeout(() => { t.style.transform = ''; }, 120);
+      // quick visual feedback
+      t.style.background = 'linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.02))';
+      setTimeout(() => { t.style.background = ''; }, 220);
+      console.log('Card clicked:', t.textContent.trim());
+    });
+  });
+
+})(); // end async
+</script>
+</body>
+</html>
+
